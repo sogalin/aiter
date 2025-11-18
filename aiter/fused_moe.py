@@ -112,6 +112,10 @@ def fused_moe(
 ):
     if not block_size_M:
         block_size_M = -1
+
+    #if w1.dtype != torch.float4_e2m1fn_x2:
+    print(f'debug tc: w1 type = {w1.dtype}, it\'s not float4_e2m1fn_x2')
+
     return fused_moe_(
         hidden_states=hidden_states,
         w1=w1,
@@ -157,11 +161,16 @@ def fused_moe_fake(
     num_local_tokens: Optional[torch.Tensor] = None,
     moe_sorting_dispatch_policy: bool = 0,
     dtype: Optional[torch.dtype] = None,
+    hidden_pad: int = 0,
+    intermediate_pad: int = 0,
+    bias1: Optional[torch.Tensor] = None,
+    bias2: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     device = topk_ids.device
     M, topk = topk_ids.shape
     dtype = hidden_states.dtype if dtype is None else dtype
-    E, model_dim, inter_dim = get_inter_dim(w1.shape, w2.shape)
+    #E, model_dim, inter_dim = get_inter_dim(w1.shape, w2.shape)
+    model_dim = w2.shape[1]
     moe_buf = torch.empty((M, model_dim), dtype=dtype, device=device)
     return moe_buf
 
@@ -674,6 +683,11 @@ def get_2stage_cfgs(
             ksplit,
             False,
         )
+
+    if hasattr(torch, 'Float4_e2m1fn_x2'):
+        print('debug tc: Float4_e2m1fn_x2 is supported')
+    print(f'debug tc: q_dtype_w = {q_dtype_w}')
+
     if (
         "ck2stages" in kernelName1
         or (q_type == QuantType.per_1x128 and doweight_stage1)
