@@ -46,6 +46,36 @@ def ensure_spawn_method():
         pass
 
 
+def _graph_event_time(func, rotate_args, num_iters):
+    calls = [rotate_args[i % len(rotate_args)] for i in range(num_iters)]
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+    try:
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            func(*calls[0][0], **calls[0][1])
+        torch.cuda.current_stream().wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            for a, kw in calls:
+                data = func(*a, **kw)
+        graph.replay()
+        torch.cuda.synchronize()
+        start_event.record()
+        graph.replay()
+        end_event.record()
+        end_event.synchronize()
+    except Exception:  # noqa: BLE001 - not capturable: time back-to-back eager launches
+        torch.cuda.synchronize()
+        start_event.record()
+        for a, kw in calls:
+            data = func(*a, **kw)
+        end_event.record()
+        end_event.synchronize()
+    return data, start_event.elapsed_time(end_event) * 1000.0 / num_iters
+
+
 def perftest(
     num_iters=101,
     num_warmup=2,
@@ -79,6 +109,10 @@ def perftest(
             ] + [(args, kwargs)]
             run_iters(num_warmup, func, *args, **kwargs)
             torch.cuda.synchronize()
+            if os.environ.get("AITER_PERF_GRAPH_EVENT", "0") == "1":
+                # Kineto misses hipModuleLaunchKernel-launched kernels on some ROCm builds; time a CUDA
+                # graph of the rotated calls with events instead.
+                return _graph_event_time(func, rotate_args, num_iters)
             if int(os.environ.get("AITER_LOG_MORE", "0")) or use_cuda_event:
                 latencies = []
                 start_event = torch.cuda.Event(enable_timing=True)
